@@ -13,6 +13,9 @@ rm -rf "$STAGE" "$ROOT/Build/$DMG_NAME"
 mkdir -p "$STAGE"
 cp -R "/Applications/CmdTabSwitcher.app" "$STAGE/CmdTabSwitcher.app"
 ln -s /Applications "$STAGE/Applications"
+cp "$ROOT/dmg-assets/Установить.command" "$STAGE/Установить.command"
+chmod +x "$STAGE/Установить.command"
+cp "$ROOT/dmg-assets/Если не открывается.txt" "$STAGE/Если не открывается.txt"
 
 echo "==> Creating $DMG_NAME"
 hdiutil create -volname "CmdTabSwitcher $VERSION" \
