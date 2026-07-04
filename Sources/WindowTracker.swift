@@ -62,6 +62,51 @@ final class WindowTracker {
         mru.removeAll { !liveIDs.contains($0) }
     }
 
+    /// Second, independent "something happened" signal: macOS Dock badges.
+    /// A lot of apps that never touch their window title (chat apps' unread
+    /// counts, background task completion badges, etc.) still set a Dock
+    /// badge — which is exposed publicly via Accessibility as each Dock
+    /// item's "AXStatusLabel" attribute. Small BFS over the Dock's own AX
+    /// tree (it's tiny — a few dozen icons), matched back to windows by
+    /// owning app name.
+    func pollDockBadges(currentWindows: [WindowInfo]) {
+        guard let dockApp = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.apple.dock" }) else { return }
+        let root = AXUIElementCreateApplication(dockApp.processIdentifier)
+
+        var queue: [AXUIElement] = [root]
+        var badgedAppNames: Set<String> = []
+        var visited = 0
+        while !queue.isEmpty, visited < 800 {
+            let element = queue.removeFirst()
+            visited += 1
+
+            var statusRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, "AXStatusLabel" as CFString, &statusRef) == .success,
+               let status = statusRef as? String, !status.isEmpty {
+                var titleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleRef)
+                if let name = titleRef as? String {
+                    badgedAppNames.insert(name)
+                }
+            }
+
+            var childrenRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+               let children = childrenRef as? [AXUIElement] {
+                queue.append(contentsOf: children)
+            }
+        }
+        guard !badgedAppNames.isEmpty else { return }
+
+        let byOwnerName = Dictionary(grouping: currentWindows, by: { $0.ownerName })
+        for appName in badgedAppNames {
+            guard let windowsForApp = byOwnerName[appName] else { continue }
+            for w in windowsForApp where w.windowID != currentFocusedWindowID {
+                dirty.insert(w.windowID)
+            }
+        }
+    }
+
     /// Call right after we (or the user, elsewhere) focus a window — bumps
     /// MRU immediately and clears its "something changed" badge, without
     /// waiting on the AX notification round-trip.

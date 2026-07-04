@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
     private let overlay = SwitcherOverlay()
     private let tracker = WindowTracker()
     private var pollTimer: Timer?
+    private var updateTimer: Timer?
+    private var updateMenuItem: NSMenuItem?
     private var windows: [WindowInfo] = []
     private var selectedIndex = 0
     private let ownPID = ProcessInfo.processInfo.processIdentifier
@@ -37,7 +39,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
         // promptly instead of only the moment you next press Cmd+Tab.
         pollTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
             guard let self else { return }
-            self.tracker.trackWindows(WindowLister.listWindows(excludingPID: self.ownPID))
+            let listed = WindowLister.listWindows(excludingPID: self.ownPID)
+            self.tracker.trackWindows(listed)
+            self.tracker.pollDockBadges(currentWindows: listed)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.checkForUpdates(silent: true) }
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60, repeats: true) { [weak self] _ in
+            self?.checkForUpdates(silent: true)
+        }
+    }
+
+    private func checkForUpdates(silent: Bool) {
+        Updater.checkForUpdate { [weak self] release in
+            guard let self else { return }
+            guard let release, Updater.isNewer(release.version, than: Updater.currentVersion()) else {
+                NSLog("CmdTabSwitcher: up to date (v\(Updater.currentVersion()))")
+                if !silent {
+                    DispatchQueue.main.async { self.updateMenuItem?.title = "Обновлений нет (v\(Updater.currentVersion()))" }
+                }
+                return
+            }
+            NSLog("CmdTabSwitcher: update v\(release.version) found, installing…")
+            DispatchQueue.main.async { self.updateMenuItem?.title = "Устанавливаю v\(release.version)…" }
+            Updater.downloadAndInstall(release) { success in
+                NSLog("CmdTabSwitcher: update install \(success ? "succeeded, relaunching" : "failed")")
+            }
         }
     }
 
@@ -54,6 +81,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
         loginItem.target = self
         loginItem.state = LaunchAtLogin.isEnabled ? .on : .off
         menu.addItem(loginItem)
+
+        menu.addItem(.separator())
+        let update = NSMenuItem(title: "Проверить обновления…", action: #selector(checkForUpdatesManually), keyEquivalent: "")
+        update.target = self
+        menu.addItem(update)
+        updateMenuItem = update
 
         menu.addItem(.separator())
         menu.addItem(withTitle: "Открыть доступ Accessibility…", action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
@@ -143,6 +176,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
         let newValue = sender.state != .on
         LaunchAtLogin.isEnabled = newValue
         sender.state = newValue ? .on : .off
+    }
+
+    @objc private func checkForUpdatesManually() {
+        updateMenuItem?.title = "Проверяю…"
+        checkForUpdates(silent: false)
     }
 
     @objc private func openAccessibilitySettings() {
