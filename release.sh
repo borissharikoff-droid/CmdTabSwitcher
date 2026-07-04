@@ -16,12 +16,24 @@ echo "==> Bumping version to $VERSION"
 CURRENT_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" Info.plist)
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $((CURRENT_BUILD + 1))" Info.plist
 
-echo "==> Building"
+echo "==> Building (signed with the stable local dev cert — for this machine)"
 ./build.sh
 
-echo "==> Zipping (ditto preserves the bundle exactly, incl. code signature)"
+# The public artifact is re-signed ad-hoc instead of with the local dev
+# certificate. A self-signed cert that a stranger's Mac has never seen chains
+# to nothing it trusts, and on current macOS that can get Gatekeeper to call
+# the app "damaged" outright — a harder block than the classic, well-trodden
+# "unidentified developer" path that a plain ad-hoc signature gets. Anyone
+# who isn't this dev machine should get the friendlier path.
+DIST_APP="Build/CmdTabSwitcher-dist.app"
+echo "==> Preparing distribution copy (ad-hoc signature)"
+rm -rf "$DIST_APP"
+cp -R "Build/CmdTabSwitcher.app" "$DIST_APP"
+codesign --force --deep --sign - "$DIST_APP"
+
+echo "==> Zipping"
 rm -f "Build/CmdTabSwitcher.zip"
-ditto -c -k --sequesterRsrc --keepParent "/Applications/CmdTabSwitcher.app" "Build/CmdTabSwitcher.zip"
+ditto -c -k --sequesterRsrc --keepParent "$DIST_APP" "Build/CmdTabSwitcher.zip"
 
 echo "==> Committing + tagging"
 git add -A
@@ -37,3 +49,5 @@ gh release create "v$VERSION" "Build/CmdTabSwitcher.zip" \
   --notes "CmdTabSwitcher v$VERSION"
 
 echo "==> Done. Installed apps will pick this up within 6h, or instantly via the menu bar → Проверить обновления."
+echo "==> Note: friends' Accessibility/Screen Recording grants may need re-confirming after an"
+echo "    auto-update, since the public build is ad-hoc signed (see release.sh comments)."
