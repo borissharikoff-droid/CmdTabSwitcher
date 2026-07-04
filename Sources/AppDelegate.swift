@@ -20,12 +20,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
         // is unreliable for a pure LSUIElement/accessory app that's never the
         // frontmost application. Briefly become a regular, activated app while
         // we ask, then drop back to menu-bar-only once the request is filed.
+        // The extra delay before asking gives macOS time to actually settle
+        // the activation — asking in the same runloop tick as activate()
+        // is exactly when this has been unreliable (needing a manual "+"
+        // add in Settings afterwards).
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
 
-        requestPermissions()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.requestPermissions()
+        }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             NSApp.setActivationPolicy(.accessory)
         }
 
@@ -101,20 +107,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
         let trusted = AXIsProcessTrustedWithOptions(options)
         NSLog("CmdTabSwitcher: Accessibility trusted = \(trusted)")
 
-        let hasScreenCapture = CGPreflightScreenCaptureAccess()
-        NSLog("CmdTabSwitcher: Screen Recording pre-granted = \(hasScreenCapture)")
-        let granted = CGRequestScreenCaptureAccess()
-        NSLog("CmdTabSwitcher: Screen Recording request result = \(granted)")
+        requestScreenCaptureAccess(attempt: 1)
+        // A second attempt a beat later — belt-and-suspenders for the case
+        // where the first one lands before the app has fully settled as the
+        // active app and gets silently dropped (the exact scenario that
+        // ends with someone having to manually hit "+" in Settings).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.requestScreenCaptureAccess(attempt: 2)
+        }
+    }
 
-        // Belt-and-suspenders: on some macOS versions an LSUIElement (menu-bar
-        // only, no window) app calling CGRequestScreenCaptureAccess() doesn't
-        // reliably register itself in the Screen Recording list. Actually
-        // attempting a capture (of the whole main display, discarded) forces
-        // the registration every time.
+    private func requestScreenCaptureAccess(attempt: Int) {
+        let hasScreenCapture = CGPreflightScreenCaptureAccess()
+        NSLog("CmdTabSwitcher: [attempt \(attempt)] Screen Recording pre-granted = \(hasScreenCapture)")
+        let granted = CGRequestScreenCaptureAccess()
+        NSLog("CmdTabSwitcher: [attempt \(attempt)] Screen Recording request result = \(granted)")
+
+        // Two different capture APIs, since which one reliably registers the
+        // app in System Settings' Screen Recording list has varied across
+        // macOS versions in testing.
         if CGDisplayCreateImage(CGMainDisplayID()) != nil {
-            NSLog("CmdTabSwitcher: forced display capture succeeded (screen recording is actually usable)")
+            NSLog("CmdTabSwitcher: [attempt \(attempt)] forced display capture succeeded")
         } else {
-            NSLog("CmdTabSwitcher: forced display capture returned nil (screen recording not yet granted)")
+            NSLog("CmdTabSwitcher: [attempt \(attempt)] forced display capture returned nil")
+        }
+        if let windowID = WindowLister.listWindows(excludingPID: ownPID).first?.windowID,
+           CGWindowListCreateImage(.null, .optionIncludingWindow, windowID, [.boundsIgnoreFraming]) != nil {
+            NSLog("CmdTabSwitcher: [attempt \(attempt)] forced window capture succeeded")
         }
     }
 

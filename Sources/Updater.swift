@@ -107,15 +107,16 @@ enum Updater {
 
         // We can't safely rewrite our own running .app bundle in place, so a
         // tiny detached script does the swap right after we quit, then
-        // relaunches us via the LaunchAgent (falling back to a plain `open`
-        // if launchd's kickstart isn't available for some reason).
+        // relaunches us with a plain `open` — this works regardless of how
+        // the app was originally started (manually, or via the SMAppService
+        // "start at login" registration), unlike depending on a specific
+        // LaunchAgent label being loaded.
         let script = """
         #!/bin/sh
         sleep 1
         rm -rf "/Applications/CmdTabSwitcher.app"
         cp -R "\(newAppPath)" "/Applications/CmdTabSwitcher.app"
-        /bin/launchctl kickstart -k "gui/$(id -u)/com.local.cmdtabswitcher" 2>/dev/null \\
-          || open -a "/Applications/CmdTabSwitcher.app"
+        open -a "/Applications/CmdTabSwitcher.app"
         rm -rf "\(extractDir)" "\(zipPath)"
         """
         let scriptPath = "/tmp/cmdtabswitcher-apply-update.sh"

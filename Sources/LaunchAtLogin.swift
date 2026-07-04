@@ -1,54 +1,27 @@
 import Foundation
+import ServiceManagement
 
-/// Minimal "start at login" via a user LaunchAgent — no extra frameworks,
-/// works the same on every macOS version.
+/// "Start at login" via SMAppService (macOS 13+) — the modern replacement for
+/// hand-rolled LaunchAgent plists. Critically, `register()` only schedules the
+/// app for the *next* login; unlike a LaunchAgent with `RunAtLoad: true`
+/// loaded via `launchctl load`, it does not also launch a second copy right
+/// now, which is exactly the "toggling this launches a duplicate" bug a
+/// manual plist has.
 enum LaunchAtLogin {
-    private static let label = "com.local.cmdtabswitcher"
-    private static var plistURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
-    }
-
     static var isEnabled: Bool {
-        get { FileManager.default.fileExists(atPath: plistURL.path) }
+        get { SMAppService.mainApp.status == .enabled }
         set {
-            if newValue { install() } else { uninstall() }
+            do {
+                if newValue {
+                    guard SMAppService.mainApp.status != .enabled else { return }
+                    try SMAppService.mainApp.register()
+                } else {
+                    guard SMAppService.mainApp.status == .enabled else { return }
+                    try SMAppService.mainApp.unregister()
+                }
+            } catch {
+                NSLog("CmdTabSwitcher: LaunchAtLogin toggle failed: \(error)")
+            }
         }
-    }
-
-    private static func install() {
-        guard let executablePath = Bundle.main.executablePath else { return }
-        let plist: [String: Any] = [
-            "Label": label,
-            "ProgramArguments": [executablePath],
-            "RunAtLoad": true,
-            "KeepAlive": false,
-        ]
-        do {
-            try FileManager.default.createDirectory(
-                at: plistURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-            try data.write(to: plistURL)
-            _ = shell("/bin/launchctl", ["load", plistURL.path])
-        } catch {
-            NSLog("CmdTabSwitcher: failed to install LaunchAgent: \(error)")
-        }
-    }
-
-    private static func uninstall() {
-        _ = shell("/bin/launchctl", ["unload", plistURL.path])
-        try? FileManager.default.removeItem(at: plistURL)
-    }
-
-    @discardableResult
-    private static func shell(_ path: String, _ args: [String]) -> Int32 {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: path)
-        task.arguments = args
-        try? task.run()
-        task.waitUntilExit()
-        return task.terminationStatus
     }
 }

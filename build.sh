@@ -14,7 +14,7 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 swiftc -O \
   -o "$BIN_PATH" \
   "$ROOT"/Sources/*.swift \
-  -framework AppKit -framework ApplicationServices -framework CoreGraphics
+  -framework AppKit -framework ApplicationServices -framework CoreGraphics -framework ServiceManagement
 
 cp "$ROOT/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$ROOT/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
