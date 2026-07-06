@@ -8,9 +8,9 @@ VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$ROOT/
 DMG_NAME="CmdTabSwitcher-$VERSION.dmg"
 STAGE="$ROOT/Build/dmg-stage"
 
-SOURCE_APP="$ROOT/Build/CmdTabSwitcher-dist.app"
+SOURCE_APP="$ROOT/Build/dist-stage/CmdTabSwitcher.app"
 if [ ! -d "$SOURCE_APP" ]; then
-  echo "!! Build/CmdTabSwitcher-dist.app not found — run release.sh first (it produces"
+  echo "!! Build/dist-stage/CmdTabSwitcher.app not found — run release.sh first (it produces"
   echo "   the ad-hoc-signed distribution copy this DMG is built from)."
   exit 1
 fi
