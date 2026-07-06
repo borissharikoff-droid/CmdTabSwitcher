@@ -69,9 +69,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
                 }
                 return
             }
-            NSLog("CmdTabSwitcher: update v\(release.version) found, installing…")
-            DispatchQueue.main.async { self.updateMenuItem?.title = "Устанавливаю v\(release.version)…" }
-            Updater.downloadAndInstall(release) { [weak self] success in
+            NSLog("CmdTabSwitcher: update v\(release.version) found, downloading…")
+            DispatchQueue.main.async { self.updateMenuItem?.title = "Скачиваю v\(release.version)… 0%" }
+            Updater.downloadAndInstall(release) { [weak self] fraction in
+                // Already on the main thread (Updater dispatches it there),
+                // but stay defensive about that contract.
+                let percent = Int((fraction * 100).rounded())
+                if fraction >= 0.999 {
+                    self?.updateMenuItem?.title = "Устанавливаю v\(release.version)…"
+                } else {
+                    self?.updateMenuItem?.title = "Скачиваю v\(release.version)… \(percent)%"
+                }
+            } completion: { [weak self] success in
                 NSLog("CmdTabSwitcher: update install \(success ? "succeeded, relaunching" : "failed")")
                 guard let self else { return }
                 DispatchQueue.main.async {

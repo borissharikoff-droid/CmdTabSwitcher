@@ -58,8 +58,19 @@ enum Updater {
         return false
     }
 
-    static func downloadAndInstall(_ release: ReleaseInfo, completion: @escaping (Bool) -> Void) {
+    /// `progress` fires on the main thread with 0...1 as the download streams
+    /// in — driven by the task's own `Progress` object via KVO, so it reflects
+    /// real bytes received, not a guess.
+    static func downloadAndInstall(
+        _ release: ReleaseInfo,
+        progress: @escaping (Double) -> Void,
+        completion: @escaping (Bool) -> Void
+    ) {
+        var observation: NSKeyValueObservation?
         let task = URLSession.shared.downloadTask(with: release.downloadURL) { tempURL, _, error in
+            observation?.invalidate()
+            observation = nil
+
             guard let tempURL, error == nil else {
                 NSLog("CmdTabSwitcher: update download failed: \(error?.localizedDescription ?? "?")")
                 completion(false)
@@ -76,6 +87,12 @@ enum Updater {
             }
             installFromZip(zipPath: zipPath, completion: completion)
         }
+
+        observation = task.progress.observe(\.fractionCompleted, options: [.new]) { taskProgress, _ in
+            let fraction = taskProgress.fractionCompleted
+            DispatchQueue.main.async { progress(fraction) }
+        }
+
         task.resume()
     }
 
