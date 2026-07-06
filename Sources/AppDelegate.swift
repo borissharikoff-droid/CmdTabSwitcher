@@ -62,15 +62,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
             guard let release, Updater.isNewer(release.version, than: Updater.currentVersion()) else {
                 NSLog("CmdTabSwitcher: up to date (v\(Updater.currentVersion()))")
                 if !silent {
-                    DispatchQueue.main.async { self.updateMenuItem?.title = "Обновлений нет (v\(Updater.currentVersion()))" }
+                    DispatchQueue.main.async {
+                        self.updateMenuItem?.title = "Обновлений нет (v\(Updater.currentVersion()))"
+                    }
+                    self.resetUpdateMenuItemLater()
                 }
                 return
             }
             NSLog("CmdTabSwitcher: update v\(release.version) found, installing…")
             DispatchQueue.main.async { self.updateMenuItem?.title = "Устанавливаю v\(release.version)…" }
-            Updater.downloadAndInstall(release) { success in
+            Updater.downloadAndInstall(release) { [weak self] success in
                 NSLog("CmdTabSwitcher: update install \(success ? "succeeded, relaunching" : "failed")")
+                guard let self else { return }
+                DispatchQueue.main.async {
+                    if success {
+                        // The app quits and relaunches itself within a fraction
+                        // of a second after this (see Updater), so this mostly
+                        // matters for the brief instant before that happens.
+                        self.updateMenuItem?.title = "Установлено v\(release.version) — перезапуск…"
+                    } else {
+                        self.updateMenuItem?.title = "Не удалось установить обновление"
+                        self.resetUpdateMenuItemLater()
+                    }
+                }
             }
+        }
+    }
+
+    /// Without this, a failed/finished check left the menu item permanently
+    /// stuck on whatever status text it last showed (the reported bug) —
+    /// put it back to the actionable "Проверить обновления…" after a beat.
+    private func resetUpdateMenuItemLater() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            self?.updateMenuItem?.title = "Проверить обновления…"
         }
     }
 
@@ -80,6 +104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
         statusItem.button?.image?.isTemplate = true
 
         let menu = NSMenu()
+        menu.addItem(withTitle: "🎉 ВАНЯ С ДНЁМ РОЖДЕНИЯ!!! 🎉", action: nil, keyEquivalent: "").isEnabled = false
+        menu.addItem(.separator())
         menu.addItem(withTitle: "CmdTab Switcher", action: nil, keyEquivalent: "").isEnabled = false
         menu.addItem(.separator())
 
