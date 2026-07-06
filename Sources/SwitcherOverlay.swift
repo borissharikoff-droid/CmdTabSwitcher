@@ -144,6 +144,10 @@ private final class SwitcherCellView: NSView {
 protocol SwitcherOverlayDelegate: AnyObject {
     func switcherOverlay(_ overlay: SwitcherOverlay, didHoverIndex index: Int)
     func switcherOverlay(_ overlay: SwitcherOverlay, didClickIndex index: Int)
+    /// A mouse click landed anywhere that isn't a card — another app's
+    /// window, the desktop, or empty space inside the panel itself. Dismiss,
+    /// same as Esc, without switching anywhere.
+    func switcherOverlayDidClickOutside(_ overlay: SwitcherOverlay)
 }
 
 /// Borderless, floating overlay that lists every on-screen window as a row of
@@ -156,6 +160,8 @@ final class SwitcherOverlay {
     private let panel: NSPanel
     private let stack = NSStackView()
     private var cells: [SwitcherCellView] = []
+    private var globalClickMonitor: Any?
+    private var localClickMonitor: Any?
 
     init() {
         panel = NSPanel(
@@ -236,6 +242,7 @@ final class SwitcherOverlay {
 
         updateSelection(selected)
         panel.orderFrontRegardless()
+        installOutsideClickMonitors()
     }
 
     func updateSelection(_ index: Int) {
@@ -246,6 +253,38 @@ final class SwitcherOverlay {
 
     func hide() {
         panel.orderOut(nil)
+        removeOutsideClickMonitors()
+    }
+
+    // MARK: - Click-outside-to-dismiss
+
+    private func installOutsideClickMonitors() {
+        removeOutsideClickMonitors()
+
+        // Clicks that land in another application's window/the desktop never
+        // reach our own app at all — only a *global* monitor sees those.
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            guard let self else { return }
+            self.delegate?.switcherOverlayDidClickOutside(self)
+        }
+
+        // Clicks inside our own panel that *aren't* on a card (the padding
+        // margin, or between cards) still need to dismiss — a local monitor
+        // observes those without swallowing the event, so a genuine card
+        // click still reaches SwitcherCellView.mouseDown normally too
+        // (calling hide() twice from switchToSelected's own path is harmless).
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self else { return event }
+            self.delegate?.switcherOverlayDidClickOutside(self)
+            return event
+        }
+    }
+
+    private func removeOutsideClickMonitors() {
+        if let globalClickMonitor { NSEvent.removeMonitor(globalClickMonitor) }
+        if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
+        globalClickMonitor = nil
+        localClickMonitor = nil
     }
 }
 

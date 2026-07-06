@@ -189,6 +189,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
         switchToSelected()
     }
 
+    func switcherOverlayDidClickOutside(_ overlay: SwitcherOverlay) {
+        // Same as Esc — dismiss without switching anywhere. Cmd may still be
+        // held down physically; hiding here means the eventual Cmd-release
+        // is a no-op too, since hotkeyMonitorCommandReleased bails when the
+        // overlay isn't visible.
+        overlay.hide()
+    }
+
     // MARK: - Menu actions
 
     @objc private func toggleLaunchAtLogin(_ sender: NSMenuItem) {
