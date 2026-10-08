@@ -22,7 +22,15 @@ final class HotkeyMonitor {
     private static let tabKeyCode: Int64 = 48
     private static let escKeyCode: Int64 = 53
 
-    func start() {
+    /// True once the event tap exists. Creation fails (and this stays false)
+    /// until Accessibility is granted — call `start()` again after that; it's
+    /// a no-op once running.
+    private(set) var isRunning = false
+
+    @discardableResult
+    func start() -> Bool {
+        if isRunning { return true }
+
         let mask: CGEventMask =
             (1 << CGEventType.keyDown.rawValue) |
             (1 << CGEventType.flagsChanged.rawValue)
@@ -41,7 +49,7 @@ final class HotkeyMonitor {
             userInfo: refcon
         ) else {
             NSLog("CmdTabSwitcher: failed to create event tap — Accessibility permission missing")
-            return
+            return false
         }
 
         eventTap = tap
@@ -49,6 +57,9 @@ final class HotkeyMonitor {
         runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        isRunning = true
+        NSLog("CmdTabSwitcher: event tap running")
+        return true
     }
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {

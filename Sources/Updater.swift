@@ -128,12 +128,27 @@ enum Updater {
         // the app was originally started (manually, or via the SMAppService
         // "start at login" registration), unlike depending on a specific
         // LaunchAgent label being loaded.
+        //
+        // The installed copy is normally owned by the user (the .pkg's
+        // postinstall makes sure of that), so the plain path works. If it
+        // isn't — e.g. someone installed with sudo — fall back to an admin
+        // password prompt rather than leaving a half-deleted app behind;
+        // writability is checked *before* anything is removed.
+        let installPath = SelfInstaller.installPath
+        let uid = getuid()
+        let gid = getgid()
         let script = """
         #!/bin/sh
         sleep 1
-        rm -rf "/Applications/CmdTabSwitcher.app"
-        cp -R "\(newAppPath)" "/Applications/CmdTabSwitcher.app"
-        open -a "/Applications/CmdTabSwitcher.app"
+        APP="\(installPath)"
+        NEW="\(newAppPath)"
+        if [ -w "$APP" ] && [ -w "$APP/Contents" ] && [ -w "/Applications" ]; then
+          rm -rf "$APP.new" && ditto "$NEW" "$APP.new" && rm -rf "$APP" && mv "$APP.new" "$APP"
+        else
+          /usr/bin/osascript -e "do shell script \\"rm -rf '$APP' && ditto '$NEW' '$APP' && chown -R \(uid):\(gid) '$APP'\\" with administrator privileges"
+        fi
+        xattr -cr "$APP" 2>/dev/null
+        open -a "$APP"
         rm -rf "\(extractDir)" "\(zipPath)"
         """
         let scriptPath = "/tmp/cmdtabswitcher-apply-update.sh"

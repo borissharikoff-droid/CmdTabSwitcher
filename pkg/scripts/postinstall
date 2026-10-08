@@ -1,0 +1,24 @@
+#!/bin/bash
+# Runs as root right after the payload has been copied to /Applications.
+APP="/Applications/CmdTabSwitcher.app"
+CONSOLE_USER="$(stat -f %Su /dev/console 2>/dev/null || echo "")"
+
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+  CONSOLE_UID="$(id -u "$CONSOLE_USER")"
+  CONSOLE_GID="$(id -g "$CONSOLE_USER")"
+
+  # Hand the bundle to the logged-in user. The in-app updater replaces
+  # /Applications/CmdTabSwitcher.app in place; a root-owned bundle would make
+  # that need an admin password every time.
+  chown -R "$CONSOLE_UID:$CONSOLE_GID" "$APP" || true
+
+  # Installer-placed files aren't quarantined, but be explicit — this is the
+  # flag that makes Gatekeeper call unsigned apps "damaged".
+  xattr -cr "$APP" 2>/dev/null || true
+
+  # Launch in the user's session (not as root!) so the menu-bar item and the
+  # permission prompts land where the user is.
+  launchctl asuser "$CONSOLE_UID" sudo -u "$CONSOLE_USER" open -a "$APP" 2>/dev/null || true
+fi
+
+exit 0

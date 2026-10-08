@@ -6,39 +6,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
     private let monitor = HotkeyMonitor()
     private let overlay = SwitcherOverlay()
     private let tracker = WindowTracker()
+    private let permissionsWindow = PermissionsWindow()
     private var pollTimer: Timer?
+    private var permissionPollTimer: Timer?
     private var updateTimer: Timer?
     private var updateMenuItem: NSMenuItem?
+    private var permissionsMenuItem: NSMenuItem?
     private var windows: [WindowInfo] = []
     private var selectedIndex = 0
     private let ownPID = ProcessInfo.processInfo.processIdentifier
+    /// Screen Recording state at launch. A grant only takes effect in a fresh
+    /// process, so if this flips from false to true we relaunch ourselves.
+    private var screenRecordingAtLaunch = false
+    private var relaunchScheduled = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // One copy only (an older version may still be running) — and it has
+        // to go *before* a possible relocation below, or `open` would just
+        // re-activate the old process instead of launching the new bundle.
+        SelfInstaller.terminateOtherInstances()
+        // Running from a .dmg / Downloads / Gatekeeper translocation path?
+        // Move to /Applications first — permissions can't stick otherwise.
+        // The app quits and comes back from the right place.
+        if SelfInstaller.relocateIfNeeded() { return }
+
         setupStatusItem()
+        enableLaunchAtLoginOnFirstRun()
+        // Clears "toggle is ON but nothing works" leftovers from older,
+        // differently-signed builds — before we look at the state below.
+        Permissions.healStaleEntriesIfNeeded()
 
-        // TCC's Screen Recording (and sometimes Accessibility) prompt/registration
-        // is unreliable for a pure LSUIElement/accessory app that's never the
-        // frontmost application. Briefly become a regular, activated app while
-        // we ask, then drop back to menu-bar-only once the request is filed.
-        // The extra delay before asking gives macOS time to actually settle
-        // the activation — asking in the same runloop tick as activate()
-        // is exactly when this has been unreliable (needing a manual "+"
-        // add in Settings afterwards).
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            self?.requestPermissions()
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            NSApp.setActivationPolicy(.accessory)
-        }
-
+        screenRecordingAtLaunch = Permissions.screenRecordingGranted
         tracker.start()
         monitor.delegate = self
-        monitor.start()
+        monitor.start() // fails harmlessly until Accessibility is granted; retried below
         overlay.delegate = self
+        startPermissionWatcher()
+
+        if !Permissions.allGranted {
+            // Register with TCC right away (that's what makes the app appear in
+            // the System Settings lists) and show the guide. Done from a
+            // regular, activated app state — prompts from a never-frontmost
+            // menu-bar app are flaky — PermissionsWindow.show() handles that.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.showPermissionsGuide()
+                Permissions.requestAccessibility()
+                if !Permissions.screenRecordingGranted {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        Permissions.requestScreenRecording()
+                    }
+                }
+            }
+        } else if CommandLine.arguments.contains("--permissions") {
+            // `open -a CmdTabSwitcher --args --permissions` — show the status
+            // window even when everything is fine (support / screenshots).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.showPermissionsGuide()
+            }
+        }
 
         // Keep title-change watchers current even while the switcher is
         // closed, so "something happened in a background window" is caught
@@ -113,10 +138,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
         statusItem.button?.image?.isTemplate = true
 
         let menu = NSMenu()
-        menu.addItem(withTitle: "🎉 ВАНЯ С ДНЁМ РОЖДЕНИЯ!!! 🎉", action: nil, keyEquivalent: "").isEnabled = false
+        menu.addItem(withTitle: "CmdTab Switcher v\(Updater.currentVersion())", action: nil, keyEquivalent: "").isEnabled = false
         menu.addItem(.separator())
-        menu.addItem(withTitle: "CmdTab Switcher", action: nil, keyEquivalent: "").isEnabled = false
-        menu.addItem(.separator())
+
+        let permissions = NSMenuItem(title: "Разрешения…", action: #selector(showPermissionsGuide), keyEquivalent: "")
+        permissions.target = self
+        menu.addItem(permissions)
+        permissionsMenuItem = permissions
 
         let loginItem = NSMenuItem(title: "Запускать при входе", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         loginItem.target = self
@@ -130,46 +158,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
         updateMenuItem = update
 
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Открыть доступ Accessibility…", action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Открыть доступ Screen Recording…", action: #selector(openScreenRecordingSettings), keyEquivalent: "").target = self
-        menu.addItem(.separator())
+        menu.addItem(withTitle: "Перезапустить", action: #selector(relaunch), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Выход", action: #selector(quit), keyEquivalent: "q").target = self
         statusItem.menu = menu
+        refreshPermissionsMenuItem()
     }
 
-    private func requestPermissions() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        let trusted = AXIsProcessTrustedWithOptions(options)
-        NSLog("CmdTabSwitcher: Accessibility trusted = \(trusted)")
+    // MARK: - Permissions
 
-        requestScreenCaptureAccess(attempt: 1)
-        // A second attempt a beat later — belt-and-suspenders for the case
-        // where the first one lands before the app has fully settled as the
-        // active app and gets silently dropped (the exact scenario that
-        // ends with someone having to manually hit "+" in Settings).
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.requestScreenCaptureAccess(attempt: 2)
+    /// Cheap 2s poll (AXIsProcessTrusted / CGPreflightScreenCaptureAccess are
+    /// local checks) that reacts to grants made in System Settings while we
+    /// run: starts the event tap the moment Accessibility arrives, relaunches
+    /// once Screen Recording arrives (it only applies to a fresh process),
+    /// and keeps the menu status line current.
+    private func startPermissionWatcher() {
+        permissionsWindow.onStatusChange = { [weak self] _, _ in self?.reactToPermissionState() }
+        permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.reactToPermissionState()
         }
     }
 
-    private func requestScreenCaptureAccess(attempt: Int) {
-        let hasScreenCapture = CGPreflightScreenCaptureAccess()
-        NSLog("CmdTabSwitcher: [attempt \(attempt)] Screen Recording pre-granted = \(hasScreenCapture)")
-        let granted = CGRequestScreenCaptureAccess()
-        NSLog("CmdTabSwitcher: [attempt \(attempt)] Screen Recording request result = \(granted)")
+    private func reactToPermissionState() {
+        if Permissions.accessibilityGranted, !monitor.isRunning {
+            monitor.start()
+        }
+        if !screenRecordingAtLaunch, Permissions.screenRecordingGranted, !relaunchScheduled {
+            relaunchScheduled = true
+            NSLog("CmdTabSwitcher: Screen Recording granted — relaunching so thumbnails work")
+            // Short delay so the permissions window shows the second ✅ before
+            // the restart; the system's own "Quit & Reopen" dialog may already
+            // have done this for us, in which case we're not running anymore.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                Relauncher.relaunch(appAt: Bundle.main.bundlePath)
+            }
+        }
+        refreshPermissionsMenuItem()
+    }
 
-        // Two different capture APIs, since which one reliably registers the
-        // app in System Settings' Screen Recording list has varied across
-        // macOS versions in testing.
-        if CGDisplayCreateImage(CGMainDisplayID()) != nil {
-            NSLog("CmdTabSwitcher: [attempt \(attempt)] forced display capture succeeded")
+    private func refreshPermissionsMenuItem() {
+        let ax = Permissions.accessibilityGranted
+        let sr = Permissions.screenRecordingGranted
+        if ax && sr {
+            permissionsMenuItem?.title = "Разрешения: всё выдано ✅"
         } else {
-            NSLog("CmdTabSwitcher: [attempt \(attempt)] forced display capture returned nil")
+            permissionsMenuItem?.title = "Разрешения: нужна настройка ⚠️"
         }
-        if let windowID = WindowLister.listWindows(excludingPID: ownPID).first?.windowID,
-           CGWindowListCreateImage(.null, .optionIncludingWindow, windowID, [.boundsIgnoreFraming]) != nil {
-            NSLog("CmdTabSwitcher: [attempt \(attempt)] forced window capture succeeded")
-        }
+    }
+
+    @objc private func showPermissionsGuide() {
+        permissionsWindow.show()
+    }
+
+    /// Cmd+Tab replacement that silently stops working after a reboot (because
+    /// it isn't running) reads as "broken" — so default to launching at login
+    /// once, on first run. The menu toggle still lets the user turn it off.
+    private func enableLaunchAtLoginOnFirstRun() {
+        let key = "didSetDefaultLaunchAtLogin"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        // Only from the permanent location — registering a copy that lives on
+        // a .dmg or in Downloads would point login at a path that disappears.
+        guard Bundle.main.bundlePath == SelfInstaller.installPath else { return }
+        LaunchAtLogin.isEnabled = true
+    }
+
+    /// Double-clicking the app in Finder while it's already running: show the
+    /// status window instead of appearing to do nothing.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showPermissionsGuide()
+        return false
     }
 
     // MARK: - HotkeyMonitorDelegate
@@ -245,12 +302,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyMonitorDelegate,
         checkForUpdates(silent: false)
     }
 
-    @objc private func openAccessibilitySettings() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-    }
-
-    @objc private func openScreenRecordingSettings() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+    @objc private func relaunch() {
+        Relauncher.relaunch(appAt: Bundle.main.bundlePath)
     }
 
     @objc private func quit() {

@@ -1,0 +1,26 @@
+#!/bin/bash
+# Runs as root right before the payload is copied in.
+APP="/Applications/CmdTabSwitcher.app"
+BUNDLE_ID="com.local.cmdtabswitcher"
+CONSOLE_USER="$(stat -f %Su /dev/console 2>/dev/null || echo "")"
+
+# Quit whatever copy is running so the swap is clean and we never end up with
+# two event taps fighting over Cmd+Tab.
+pkill -x CmdTabSwitcher 2>/dev/null || true
+sleep 1
+
+if [ -d "$APP" ]; then
+  # Builds up to 1.0.8 were ad-hoc signed, which ties the Accessibility /
+  # Screen Recording grants to that exact binary. Those rows would show an
+  # ON toggle that does nothing for the new app — clear them so the user can
+  # simply grant again. Builds signed with our certificate keep their grants.
+  if ! codesign -dvv "$APP" 2>&1 | grep -q 'Authority=CmdTabSwitcher Local Dev'; then
+    tccutil reset Accessibility "$BUNDLE_ID" 2>/dev/null || true
+    if [ -n "$CONSOLE_USER" ]; then
+      sudo -u "$CONSOLE_USER" tccutil reset ScreenCapture "$BUNDLE_ID" 2>/dev/null || true
+    fi
+  fi
+  rm -rf "$APP"
+fi
+
+exit 0

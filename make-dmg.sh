@@ -1,34 +1,35 @@
 #!/bin/bash
-# Builds a standard "drag app into Applications" .dmg installer from
-# whatever's currently in /Applications/CmdTabSwitcher.app.
+# Packs the installer into Build/CmdTabSwitcher-<version>.dmg:
+#   • Установить CmdTabSwitcher.pkg   — double-click, done
+#   • Если не открывается.txt         — the one Gatekeeper step, spelled out
+# Run ./build.sh and ./make-pkg.sh first.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_NAME="CmdTabSwitcher"
+BUILD="$ROOT/Build"
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$ROOT/Info.plist")
-DMG_NAME="CmdTabSwitcher-$VERSION.dmg"
-STAGE="$ROOT/Build/dmg-stage"
+PKG="$BUILD/$APP_NAME-$VERSION.pkg"
+STAGING="$BUILD/dmg-staging"
+DMG="$BUILD/$APP_NAME-$VERSION.dmg"
 
-SOURCE_APP="$ROOT/Build/dist-stage/CmdTabSwitcher.app"
-if [ ! -d "$SOURCE_APP" ]; then
-  echo "!! Build/dist-stage/CmdTabSwitcher.app not found — run release.sh first (it produces"
-  echo "   the ad-hoc-signed distribution copy this DMG is built from)."
+if [ ! -f "$PKG" ]; then
+  echo "!! $PKG not found — run ./build.sh && ./make-pkg.sh first." >&2
   exit 1
 fi
 
-echo "==> Staging"
-rm -rf "$STAGE" "$ROOT/Build/$DMG_NAME"
-mkdir -p "$STAGE"
-cp -R "$SOURCE_APP" "$STAGE/CmdTabSwitcher.app"
-ln -s /Applications "$STAGE/Applications"
-cp "$ROOT/dmg-assets/Установить.command" "$STAGE/Установить.command"
-chmod +x "$STAGE/Установить.command"
-cp "$ROOT/dmg-assets/Если не открывается.txt" "$STAGE/Если не открывается.txt"
+echo "==> Staging DMG contents"
+rm -rf "$STAGING" "$DMG"
+mkdir -p "$STAGING"
+cp "$PKG" "$STAGING/Установить CmdTabSwitcher.pkg"
+cp "$ROOT/dmg-assets/Если не открывается.txt" "$STAGING/"
 
-echo "==> Creating $DMG_NAME"
-hdiutil create -volname "CmdTabSwitcher $VERSION" \
-  -srcfolder "$STAGE" \
+echo "==> Creating $DMG"
+hdiutil create \
+  -volname "CmdTab Switcher $VERSION" \
+  -srcfolder "$STAGING" \
   -ov -format UDZO \
-  "$ROOT/Build/$DMG_NAME"
+  "$DMG" >/dev/null
 
-rm -rf "$STAGE"
-echo "==> Done: $ROOT/Build/$DMG_NAME"
+rm -rf "$STAGING"
+echo "==> Done: $DMG"

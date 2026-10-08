@@ -1,61 +1,92 @@
 #!/bin/bash
-# Bump the version, build+sign, zip, tag, push, and publish a GitHub Release
-# with the zip attached. This is the file CmdTabSwitcher.swift's Updater.swift
-# polls (GitHub Releases "latest"), so running this is the entire "ship an
-# update to everyone who has the app installed" workflow.
+# Cuts a release:  ./release.sh 1.2.0 [--dry-run]
+#   1. bumps CFBundleShortVersionString / CFBundleVersion in Info.plist
+#   2. ./build.sh  → universal, cert-signed Build/CmdTabSwitcher.app
+#   3. ./make-pkg.sh + ./make-dmg.sh + CmdTabSwitcher.zip
+#   4. commit, tag vX.Y.Z, push, `gh release create` with all three artifacts
 #
-# Usage: ./release.sh 1.0.1
+# Everything in the release is signed with the "CmdTabSwitcher Local Dev"
+# certificate, so TCC grants survive from version to version and the in-app
+# updater (which looks for CmdTabSwitcher.zip on the latest release) can swap
+# the bundle without the user re-granting anything.
 set -euo pipefail
 
-VERSION="${1:?Usage: ./release.sh <version, e.g. 1.0.1>}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-echo "==> Bumping version to $VERSION"
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Info.plist
-CURRENT_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" Info.plist)
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $((CURRENT_BUILD + 1))" Info.plist
+VERSION="${1:-}"
+DRY_RUN="${2:-}"
+if [ -z "$VERSION" ]; then
+  echo "usage: ./release.sh <version> [--dry-run]" >&2
+  exit 1
+fi
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "!! version must look like 1.2.3" >&2
+  exit 1
+fi
 
-echo "==> Building (signed with the stable local dev cert — for this machine)"
-./build.sh
+APP_NAME="CmdTabSwitcher"
+BUILD="$ROOT/Build"
+PLIST="$ROOT/Info.plist"
+TAG="v$VERSION"
 
-# The public artifact is re-signed ad-hoc instead of with the local dev
-# certificate. A self-signed cert that a stranger's Mac has never seen chains
-# to nothing it trusts, and on current macOS that can get Gatekeeper to call
-# the app "damaged" outright — a harder block than the classic, well-trodden
-# "unidentified developer" path that a plain ad-hoc signature gets. Anyone
-# who isn't this dev machine should get the friendlier path.
-# Staged in its own directory under the CORRECT final name — "--keepParent"
-# below preserves whatever the source folder is literally named inside the
-# zip, so this app must already be called "CmdTabSwitcher.app" here, not
-# some "-dist" suffixed build artifact name (that exact bug silently broke
-# every auto-update from v1.0.2 through v1.0.7: Updater.swift looks for
-# "CmdTabSwitcher.app" post-unzip and always found nothing).
-DIST_STAGE="Build/dist-stage"
-DIST_APP="$DIST_STAGE/CmdTabSwitcher.app"
-echo "==> Preparing distribution copy (ad-hoc signature)"
-rm -rf "$DIST_STAGE"
-mkdir -p "$DIST_STAGE"
-cp -R "Build/CmdTabSwitcher.app" "$DIST_APP"
-codesign --force --deep --sign - "$DIST_APP"
+CURRENT_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST")
+CURRENT_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST")
+if [ "$CURRENT_VERSION" != "$VERSION" ]; then
+  echo "==> Bumping Info.plist $CURRENT_VERSION ($CURRENT_BUILD) → $VERSION ($((CURRENT_BUILD + 1)))"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $((CURRENT_BUILD + 1))" "$PLIST"
+else
+  echo "==> Info.plist already at $VERSION ($CURRENT_BUILD) — re-running release, not bumping"
+fi
 
-echo "==> Zipping"
-rm -f "Build/CmdTabSwitcher.zip"
-ditto -c -k --sequesterRsrc --keepParent "$DIST_APP" "Build/CmdTabSwitcher.zip"
+"$ROOT/build.sh"
+"$ROOT/make-pkg.sh"
+"$ROOT/make-dmg.sh"
 
-echo "==> Committing + tagging"
+echo "==> Zipping app for the in-app updater"
+ZIP="$BUILD/$APP_NAME.zip"
+rm -f "$ZIP"
+ditto -c -k --keepParent "$BUILD/$APP_NAME.app" "$ZIP"
+
+PKG="$BUILD/$APP_NAME-$VERSION.pkg"
+DMG="$BUILD/$APP_NAME-$VERSION.dmg"
+echo "==> Artifacts:"
+ls -la "$DMG" "$PKG" "$ZIP"
+shasum -a 256 "$DMG" "$PKG" "$ZIP"
+
+if [ "$DRY_RUN" = "--dry-run" ]; then
+  echo "==> --dry-run: not committing / tagging / publishing."
+  exit 0
+fi
+
+echo "==> Committing + tagging $TAG"
 git add -A
-git commit -m "Release v$VERSION" || echo "(nothing to commit)"
-git tag -f "v$VERSION"
-git push origin main
-git push origin "v$VERSION" --force
+git commit -m "Release $VERSION" || echo "(nothing to commit)"
+git tag -f "$TAG"
+git push origin HEAD
+git push -f origin "$TAG"
 
-echo "==> Publishing GitHub Release"
-gh release delete "v$VERSION" --yes 2>/dev/null || true
-gh release create "v$VERSION" "Build/CmdTabSwitcher.zip" \
-  --title "v$VERSION" \
-  --notes "CmdTabSwitcher v$VERSION"
+echo "==> Publishing GitHub release $TAG"
+NOTES="$(mktemp)"
+cat > "$NOTES" <<EOF
+## Установка
 
-echo "==> Done. Installed apps will pick this up within 6h, or instantly via the menu bar → Проверить обновления."
-echo "==> Note: friends' Accessibility/Screen Recording grants may need re-confirming after an"
-echo "    auto-update, since the public build is ad-hoc signed (see release.sh comments)."
+**Способ 1 — DMG:** скачай \`$APP_NAME-$VERSION.dmg\`, открой, два клика по «Установить CmdTabSwitcher.pkg».
+Если macOS говорит «не удалось проверить» — System Settings → Privacy & Security → внизу «Open Anyway» (один раз). Подробно в файле «Если не открывается.txt» внутри dmg.
+
+**Способ 2 — одна команда в Terminal (без диалогов Gatekeeper):**
+\`\`\`
+curl -fsSL https://raw.githubusercontent.com/borissharikoff-droid/CmdTabSwitcher/main/install.sh | bash
+\`\`\`
+
+После запуска приложение само покажет окно с двумя разрешениями (Accessibility, Screen Recording) и закроет его, когда оба включены.
+
+Работает на macOS 13+, Apple Silicon и Intel. Обновления ставятся из меню, права при этом сохраняются.
+EOF
+gh release create "$TAG" "$DMG" "$PKG" "$ZIP" \
+  --title "$APP_NAME $VERSION" \
+  --notes-file "$NOTES" \
+  --latest
+rm -f "$NOTES"
+echo "==> Released $TAG"

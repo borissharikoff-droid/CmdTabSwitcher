@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>CmdTab Switcher</title>
+    <organization>com.local.cmdtabswitcher</organization>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <!-- Install for all users into /Applications only; no "change location" UI. -->
+    <domains enable_localSystem="true"/>
+    <options customize="never" require-scripts="true" rootVolumeOnly="true" hostArchitectures="arm64,x86_64"/>
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="13.0"/>
+        </allowed-os-versions>
+    </volume-check>
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.local.cmdtabswitcher.pkg"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="com.local.cmdtabswitcher.pkg" visible="false">
+        <pkg-ref id="com.local.cmdtabswitcher.pkg"/>
+    </choice>
+    <pkg-ref id="com.local.cmdtabswitcher.pkg" version="__VERSION__" onConclusion="none">CmdTabSwitcher-component.pkg</pkg-ref>
+</installer-gui-script>
