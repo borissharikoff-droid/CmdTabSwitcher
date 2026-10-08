@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	A Terminal *document* (window profile with a startup command). Gatekeeper
+	only signature-checks executables — apps, .pkg, .command scripts — never
+	documents, so double-clicking this from a freshly downloaded, quarantined
+	.dmg opens Terminal and runs the installer with zero "Apple could not
+	verify…" dialogs. The command locates the mounted image by version-stamped
+	payload path (so a stale, still-mounted older .dmg can't be picked up),
+	and falls back to the online installer if the image isn't mounted at all.
+
+	RunCommandAsShell must be false: for opened documents Terminal only
+	supports typing CommandString into the user's login shell (with "true"
+	it silently does nothing — verified on macOS 26). The leading `exec`
+	replaces that shell with our bash, so a clean exit closes the window
+	(shellExitAction=1) while a failure leaves the output on screen. The
+	single-quoted body is opaque to zsh/bash/fish alike.
+	-->
+	<key>CommandString</key>
+	<string>exec /bin/bash -c 'for f in /Volumes/CmdTabSwitcher*/.payload/install-__VERSION__.sh; do if [ -f "$f" ]; then exec /bin/bash "$f"; fi; done; echo "Образ не смонтирован — ставлю последнюю версию из интернета…"; curl -fsSL https://raw.githubusercontent.com/borissharikoff-droid/CmdTabSwitcher/main/install.sh | /bin/bash'</string>
+	<key>RunCommandAsShell</key>
+	<false/>
+	<key>shellExitAction</key>
+	<integer>1</integer>
+	<key>ProfileCurrentVersion</key>
+	<real>2.07</real>
+	<key>name</key>
+	<string>Установка CmdTab Switcher</string>
+	<key>type</key>
+	<string>Window Settings</string>
+</dict>
+</plist>

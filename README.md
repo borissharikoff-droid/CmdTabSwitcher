@@ -6,14 +6,13 @@ macOS 13 Ventura и новее · Apple Silicon и Intel (universal) · живё
 
 ## Установка
 
-### Способ 1 — DMG
+### Способ 1 — DMG (без диалогов Gatekeeper)
 1. Скачай `CmdTabSwitcher-x.y.z.dmg` из [последнего релиза](https://github.com/borissharikoff-droid/CmdTabSwitcher/releases/latest).
-2. Открой dmg → два клика по **«Установить CmdTabSwitcher.pkg»** → Продолжить → Установить → пароль.
-3. Приложение запустится само и покажет окно с двумя разрешениями. Нажми «Открыть настройки…» и включи тумблер напротив CmdTabSwitcher — для **Accessibility** и для **Screen Recording**. Окно закроется само.
+2. Открой dmg → два клика по **«Установить»** (файл рядом с текстовым). Откроется Терминал, за пару секунд всё скопируется в «Программы» и запустится. Никаких «Apple не может проверить…».
+3. Приложение покажет окно с двумя разрешениями. Нажми «Открыть настройки…» и включи тумблер напротив CmdTabSwitcher — для **Accessibility** и для **Screen Recording**. Окно закроется само.
 4. Держи Cmd, жми Tab.
 
-Если macOS не даёт открыть pkg («Apple не может проверить…») — это Gatekeeper, один раз:
-**System Settings → Privacy & Security → в самом низу «Open Anyway» / «Всё равно открыть»** → пароль. На macOS 13–14 достаточно правого клика по pkg → «Открыть».
+Как это работает: «Установить» — это *документ* Терминала, а не программа, поэтому Gatekeeper его не проверяет; сам скрипт ставит приложение уже без флага карантина (подробности — в комментариях `make-dmg.sh` и `dmg-assets/Установить.terminal.template`).
 
 ### Способ 2 — одна команда в Terminal (вообще без Gatekeeper)
 ```bash
@@ -79,3 +78,24 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -config codesign.cnf -keyou
 openssl pkcs12 -export -inkey key.pem -in cert.pem -name "CmdTabSwitcher Local Dev" -out CmdTabSwitcherLocalDev.p12
 security import CmdTabSwitcherLocalDev.p12 -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
 ```
+
+### Нотаризация (полное «штатное» подписание Apple)
+
+Всё уже готово к нотаризации: как только на этой машине появятся сертификаты Developer ID и учётные данные notarytool, **каждый следующий `./release.sh` сам** возьмёт сертификаты (`build.sh` → hardened runtime + secure timestamp, `make-pkg.sh` → подпись пакета), отправит dmg и pkg в Apple (`notarize.sh`), дождётся проверки и пристеплит тикеты. Gatekeeper перестанет спрашивать совсем — включая pkg и «перетащить в Программы». Проверить готовность: `security find-identity -v -p codesigning | grep Developer`.
+
+Что нужно сделать один раз:
+
+1. **Аккаунт Apple Developer Program** — $99/год: [developer.apple.com/programs](https://developer.apple.com/programs/).
+2. **Сертификаты**: [developer.apple.com/account/resources/certificates](https://developer.apple.com/account/resources/certificates) → «+» → создать `Developer ID Application` и `Developer ID Installer` (каждый через CSR из Keychain Access: Keychain Access → Certificate Assistant → Request a Certificate from a Certificate Authority). Скачать оба `.cer` и открыть — они встанут в Keychain.
+3. **Пароль приложения**: [account.apple.com](https://account.apple.com/) → Sign-In and Security → App-Specific Passwords → сгенерировать (используется вместо основного пароля Apple ID).
+4. **Сохранить учётные данные notarytool** (один раз в Терминале, пароль вводится там же и в чат его нести не надо):
+   ```bash
+   xcrun notarytool store-credentials CmdTabSwitcher \
+     --apple-id ТВОЙ-APPLE-ID --team-id ТВОЙ-TEAMID \
+     --password ПАРОЛЬ-ПРИЛОЖЕНИЯ
+   ```
+5. Запустить `./release.sh <версия>` — остальное автоматически.
+
+Важно: переход с локального сертификата на Developer ID один раз сбросит TCC-права у всех пользователей (подпись стала другой). Приложение само это увидит, покажет окно разрешений и попросит выдать оба права заново — и больше спрашивать не будет.
+
+Если аккаунта нет — ничего не ломается: релиз печатает «notarization skipped» и публикует dmg с «Установить» (установка без диалогов Gatekeeper в любом случае).

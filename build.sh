@@ -14,20 +14,31 @@ APP_BUNDLE="$BUILD/$APP_NAME.app"
 BIN_PATH="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 MIN_MACOS="13.0"
 
-# A stable local signing identity (not ad-hoc "-"). With ad-hoc signing the
-# code signature's designated requirement is the binary's hash, so every
-# single build is a brand-new app to TCC: Accessibility/Screen Recording
-# toggles stay ON in System Settings but silently stop applying. With a
-# certificate the requirement becomes "this bundle ID signed by this cert",
-# which is identical for every build — grants survive updates, on every Mac.
-# See README.md ("Сертификат") for how to create it if it's missing.
-SIGN_ID="CmdTabSwitcher Local Dev"
-
-if ! security find-identity -v -p codesigning | grep -q "\"$SIGN_ID\""; then
-  echo "!! Signing identity \"$SIGN_ID\" not found in the keychain." >&2
-  echo "   Create it (README.md → Сертификат) or restore it from the backup .p12 — do NOT" >&2
-  echo "   fall back to ad-hoc signing, that is exactly what broke permissions in 1.0.x." >&2
-  exit 1
+# Signing strategy:
+#  • If a real Apple "Developer ID Application" certificate is in the keychain
+#    (see README → Нотаризация), use it: hardened runtime + secure timestamp
+#    are what notarization requires, and a notarized build is what makes
+#    Gatekeeper stop warning on other people's Macs entirely.
+#  • Otherwise fall back to the project's stable local certificate. Not
+#    notarizable, but a stable designated requirement, so Accessibility /
+#    Screen Recording grants survive every update.
+IDENTITIES="$(security find-identity -v -p codesigning)"
+# sed instead of grep: no match must yield an empty string, not a failed
+# pipeline (set -o pipefail would kill the script on grep's exit code).
+DEV_ID_APP="$(printf '%s\n' "$IDENTITIES" | sed -n 's/.*\("Developer ID Application[^"]*"\).*/\1/p' | head -n 1 | tr -d '"')"
+if [ -n "$DEV_ID_APP" ]; then
+  SIGN_ID="$DEV_ID_APP"
+  SIGN_FLAGS=(--timestamp --options runtime)
+  echo "==> Developer ID Application certificate found: $SIGN_ID"
+else
+  SIGN_ID="CmdTabSwitcher Local Dev"
+  SIGN_FLAGS=(--timestamp=none)
+  if ! printf '%s\n' "$IDENTITIES" | grep -q "\"$SIGN_ID\""; then
+    echo "!! Signing identity \"$SIGN_ID\" not found in the keychain." >&2
+    echo "   Create it (README.md → Сертификат) or restore it from the backup .p12 — do NOT" >&2
+    echo "   fall back to ad-hoc signing, that is exactly what broke permissions in 1.0.x." >&2
+    exit 1
+  fi
 fi
 
 FRAMEWORKS=(-framework AppKit -framework ApplicationServices -framework CoreGraphics -framework ServiceManagement)
@@ -51,7 +62,7 @@ cp "$ROOT/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 echo -n "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 
 echo "==> Code-signing ($SIGN_ID)..."
-codesign --force --deep --timestamp=none --sign "$SIGN_ID" "$APP_BUNDLE"
+codesign --force --deep --sign "$SIGN_ID" "${SIGN_FLAGS[@]}" "$APP_BUNDLE"
 
 echo "==> Verifying..."
 lipo -info "$BIN_PATH"

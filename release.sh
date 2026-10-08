@@ -60,6 +60,19 @@ if [ "$DRY_RUN" = "--dry-run" ]; then
   exit 0
 fi
 
+# Notarize dmg+pkg when the machine is set up for it (Developer ID certs +
+# stored notarytool credentials). notarize.sh exits 10 = "not configured",
+# which is fine: the DMG's «Установить» path needs no notarization at all.
+echo "==> Notarization"
+set +e
+"$ROOT/notarize.sh" "$DMG" "$PKG"
+NOTARY_RC=$?
+set -e
+if [ "$NOTARY_RC" -ne 0 ] && [ "$NOTARY_RC" -ne 10 ]; then
+  echo "!! notarization failed (rc=$NOTARY_RC) — release aborted, nothing published." >&2
+  exit 1
+fi
+
 echo "==> Committing + tagging $TAG"
 git add -A
 git commit -m "Release $VERSION" || echo "(nothing to commit)"
@@ -69,20 +82,29 @@ git push -f origin "$TAG"
 
 echo "==> Publishing GitHub release $TAG"
 NOTES="$(mktemp)"
+if [ "$NOTARY_RC" -eq 0 ]; then
+  GATEKEEPER_NOTE="Дистрибутив подписан Developer ID и нотаризован Apple — никаких предупреждений Gatekeeper, включая pkg и «перетащить в Программы»."
+else
+  GATEKEEPER_NOTE="Приложение не нотаризовано Apple (нужен аккаунт разработчика, см. README → Нотаризация) — поэтому ставь через «Установить» внутри dmg или командой из Способа 2: оба пути без единого диалога Gatekeeper."
+fi
 cat > "$NOTES" <<EOF
 ## Установка
 
-**Способ 1 — DMG:** скачай \`$APP_NAME-$VERSION.dmg\`, открой, два клика по «Установить CmdTabSwitcher.pkg».
-Если macOS говорит «не удалось проверить» — System Settings → Privacy & Security → внизу «Open Anyway» (один раз). Подробно в файле «Если не открывается.txt» внутри dmg.
+**Способ 1 — DMG:** скачай \`$APP_NAME-$VERSION.dmg\`, открой, два клика по **«Установить»**.
+Откроется Терминал, за пару секунд всё скопируется в «Программы» и запустится.
 
-**Способ 2 — одна команда в Terminal (без диалогов Gatekeeper):**
+$GATEKEEPER_NOTE
+
+**Способ 2 — одна команда в Terminal:**
 \`\`\`
 curl -fsSL https://raw.githubusercontent.com/borissharikoff-droid/CmdTabSwitcher/main/install.sh | bash
 \`\`\`
 
-После запуска приложение само покажет окно с двумя разрешениями (Accessibility, Screen Recording) и закроет его, когда оба включены.
+После запуска приложение само покажет окно с двумя разрешениями (Accessibility, Screen Recording), откроет нужную вкладку настроек по кнопке и закроет окно, когда оба включены.
 
 Работает на macOS 13+, Apple Silicon и Intel. Обновления ставятся из меню, права при этом сохраняются.
+
+\`$APP_NAME-$VERSION.pkg\` — классический установщик macOS (без нотаризации macOS спросит «Open Anyway» один раз). \`$APP_NAME.zip\` — для автообновления, руками не качать.
 EOF
 gh release create "$TAG" "$DMG" "$PKG" "$ZIP" \
   --title "$APP_NAME $VERSION" \

@@ -53,11 +53,28 @@ pkgbuild \
 
 echo "==> Building installer $OUT_PKG"
 sed "s/__VERSION__/$VERSION/g" "$ROOT/pkg/distribution.xml" > "$DIST_XML"
-productbuild \
-  --distribution "$DIST_XML" \
-  --resources "$ROOT/pkg/resources" \
-  --package-path "$BUILD" \
-  "$OUT_PKG" >/dev/null
+# A "Developer ID Installer" signature (plus notarization, see notarize.sh)
+# is what lets the .pkg itself pass Gatekeeper silently. Without it the pkg
+# still installs fine — via «Установить» on the DMG or with the one-time
+# "Open Anyway" — it's just not the zero-dialog path.
+# sed instead of grep: no match must yield an empty string, not a failed
+# pipeline (set -o pipefail would kill the script on grep's exit code).
+DEV_ID_PKG="$(security find-identity -v -p codesigning | sed -n 's/.*\("Developer ID Installer[^"]*"\).*/\1/p' | head -n 1 | tr -d '"')"
+if [ -n "$DEV_ID_PKG" ]; then
+  echo "==> Signing installer package with: $DEV_ID_PKG"
+  productbuild \
+    --distribution "$DIST_XML" \
+    --resources "$ROOT/pkg/resources" \
+    --package-path "$BUILD" \
+    --sign "$DEV_ID_PKG" \
+    "$OUT_PKG" >/dev/null
+else
+  productbuild \
+    --distribution "$DIST_XML" \
+    --resources "$ROOT/pkg/resources" \
+    --package-path "$BUILD" \
+    "$OUT_PKG" >/dev/null
+fi
 
 rm -rf "$PKG_ROOT" "$COMPONENT_PLIST" "$COMPONENT_PKG" "$DIST_XML"
 echo "==> Done: $OUT_PKG"
